@@ -211,3 +211,73 @@ classification is unchanged); it closes a gap in what the direct path is willing
 is classified as direct. `docs/specifications/0.4.2/i1-dual-mode-mcp-transport.md` is corrected in
 lockstep to state the same allowlist as a normative requirement and to stop describing
 `mcp-method`/`mcp-name` as AIP-proprietary.
+
+## Amendment (v0.4.2 I3.4 actual-client qualification — negotiated missing-header fallback)
+
+I3.4's real VS Code (1.137.0) + GitHub Copilot Chat qualification run found a second incorrect premise
+in this ADR's original routing decision, this time on the *negotiated* side rather than the direct
+side: `ModernProtocolGuard` treated a *missing* `MCP-Protocol-Version` header on any markerless
+non-`initialize` request as an outright rejection ("A negotiated follow-up request requires an
+MCP-Protocol-Version header"), on the assumption that the header's presence was mandatory for the
+request to be trustworthy at all.
+
+Two independent facts contradict that assumption, and they establish two *separate* normative points,
+not one. The MCP specification's own text says both: *"the client MUST include the
+MCP-Protocol-Version... header on all subsequent requests"* **and**, separately, for backward
+compatibility, *"if the server does not receive an MCP-Protocol-Version header, and has no other way
+to identify the version... the server SHOULD assume protocol version 2025-03-26."* A client omitting
+the header is not itself spec-conformant — but the spec still directs a *server* that receives such a
+request to tolerate it gracefully, not reject it. AIP's guard conflated these: it enforced the
+client-side `MUST` as a hard rejection, with no allowance at all for the server-side `SHOULD`. Second,
+the exact MCP SDK AIP has pinned (`mcp==2.2.0`) already implements that server-side graceful default
+itself: `mcp.server.streamable_http` falls back to a `DEFAULT_NEGOTIATED_VERSION` constant when the
+header is absent, and its own `_validate_request_headers` comment states outright that "the legacy
+version-gate is gone." AIP's guard, sitting in front of that SDK, was **stricter than both the spec's
+own server-side allowance and the SDK it wraps** — even though the traffic triggering it was not
+itself perfectly spec-conformant client behavior.
+
+VS Code's real MCP client exposed this directly: it negotiated a current protocol version
+(`protocolVersion: "2025-11-25"`) correctly via `initialize` — AIP responded successfully — and then
+sent `notifications/initialized` with no `MCP-Protocol-Version` header at all (an omission the spec's
+client-side `MUST` does not authorize, but one its server-side backward-compatibility clause exists
+specifically to accommodate). AIP's guard rejected it with `400`/`-32600` before `tools/list` ever ran,
+killing the connection outright. **Under the pre-fix candidate, VS Code could not connect to AIP at
+all, in any invocation** — not an intermittent or edge-case failure, and a real, release-blocking
+interoperability defect regardless of which side's spec obligation was technically at issue. Full
+finding recorded in `docs/release-validation/v0.4.2-client-traces/vscode.md`.
+
+**Fix** (`app/mcp/guard.py`): the negotiated-mode branch no longer treats a missing
+`MCP-Protocol-Version` header as a rejection reason. A markerless non-`initialize` request with no
+version header at all is now forwarded to the pinned SDK, which applies its own
+`DEFAULT_NEGOTIATED_VERSION` fallback. The one case that remains rejected is unchanged and still
+correct: a markerless follow-up whose header is *present* and explicitly names the direct/
+single-exchange `2026-07-28` era — that is a genuine contradiction (claiming the direct era while
+behaving like negotiated traffic), categorically different from a header that is simply absent, and
+delegating it as negotiated traffic would be a real no-downgrade violation. An explicitly present but
+otherwise-unrecognized version value is still handled entirely by the SDK's own recognition/error
+semantics, unchanged.
+
+Regression coverage added to `tests/unit/test_mcp_discovery.py`: one dedicated scenario test,
+`_check_vscode_full_sequence_without_protocol_header_is_accepted`, performs `initialize` →
+`notifications/initialized` → `tools/list`, all three requests itself (not relying on adjacent-test
+call order) and all headerless — asserting the negotiated `2025-11-25` `initialize` result, the
+notification's exact `202 Accepted`/empty-body response (not merely "not a 400"), and a successful
+three-tool `tools/list` immediately after. Only the `initialize` → headerless-`notifications/initialized`
+portion of this sequence was directly observed in VS Code's own client trace log (that is the exact
+real-world reproduction); its queued `prompts/list`/`tools/list` never completed once the connection
+died, so their headers were never observed. Covering headerless `tools/list`/`tools/call` in the same
+scenario and elsewhere in this file is deliberate, broader contract coverage for the general fallback
+rule §11 now states — not a claim that VS Code's own `tools/list` was confirmed headerless too. The
+general markerless
+`tools/list`/`tools/call`-without-header checks were updated from asserting rejection to asserting the
+SDK fallback now answers them normally; a session identifier alone (still no version header) is
+likewise now delegated to the SDK, not rejected; the direct-era-header-present-without-marker
+rejection case is unchanged and still covered. No hang or event-loop risk exists in this code path (unlike
+the I3.3 amendment's `subscriptions/listen` finding), so no subprocess-isolated regression test was
+needed here — an in-process ASGI check is sufficient and sound.
+
+This amendment does not change the routing contract's dual-mode shape or the direct-marker allowlist
+from the I3.3 amendment above; it corrects the negotiated side's missing-header handling to match both
+the MCP specification's own backward-compatibility clause and the pinned SDK's own already-implemented
+behavior. `docs/specifications/0.4.2/i1-dual-mode-mcp-transport.md` §11/§11.1/§12/§28 and its
+Definition of Done/Release Blockers sections are corrected in lockstep.

@@ -64,6 +64,28 @@ to every other client, including its own health check. This is a closed allowlis
 per-method denylist: any future SDK-native method this guard has not been taught about is rejected the
 same way, never blindly trusted.
 
+A markerless negotiated follow-up with **no** `MCP-Protocol-Version` header at all is forwarded to the
+pinned SDK, not rejected (v0.4.2 I1 amendment, I3.4 VS Code actual-client-qualification finding). Only
+a markerless follow-up that *explicitly* names the direct/single-exchange `2026-07-28` era is still
+rejected outright - that specific contradiction (claims the direct era, behaves like negotiated
+traffic) is never delegated. A missing header is a different case, governed by two distinct MCP
+specification statements: the client MUST include this header on every subsequent request (a client
+omitting it is not itself spec-conformant), and *separately*, a server that receives no such header
+and has no other way to identify the version SHOULD assume protocol version 2025-03-26 rather than
+reject - a backward-compatibility allowance for exactly this non-conformant-but-real traffic, not a
+license authorizing clients to omit the header. The pinned SDK already implements that server-side
+fallback (`DEFAULT_NEGOTIATED_VERSION` in `mcp.server.streamable_http`). Before this amendment, AIP's
+guard enforced only the client-side MUST, as a hard rejection, with no allowance at all for the
+server-side SHOULD: it hard-rejected every markerless follow-up missing the header, which is precisely
+how GitHub Copilot Chat's real MCP client in VS Code was directly observed to behave on
+`notifications/initialized` even after correctly negotiating a current protocol version (the client's
+own trace log shows no `MCP-Protocol-Version` header on that request; its queued `prompts/list`/
+`tools/list` calls never completed once the connection died there, so their headers were never
+observed - the fix's coverage of all markerless follow-ups is a general contract requirement, not a
+claim that those two calls were confirmed headerless too) - the strict check made VS Code unable to
+connect to AIP at all, not merely on some inputs, regardless of whose spec obligation was technically
+at issue.
+
 Every non-POST method (`GET`, `DELETE`, `HEAD`, and everything else) is rejected with HTTP 405
 before the SDK is invoked at all, since this stateless release advertises no SSE stream or session
 lifecycle on any of them - see spec §8/§30 for the exact per-method contract.
@@ -271,28 +293,32 @@ class ModernProtocolGuard:
             await self._app(scope, replay_receive, send)
             return
 
-        # No AIP direct-envelope marker at all: this is negotiated-mode traffic. Only
-        # `initialize` may be markerless - every other method needs a MCP-Protocol-Version
-        # header that does not itself name the direct/single-exchange era. The pinned SDK
-        # owns everything else from here: negotiation, session lifecycle, and dispatch,
-        # including rejecting a version it does not recognize.
+        # No AIP direct-envelope marker at all: this is negotiated-mode traffic. Only a
+        # markerless follow-up that explicitly names the direct/single-exchange era is rejected
+        # here - that specific contradiction (claims the direct era, behaves like negotiated
+        # traffic) is never delegated. A *missing* MCP-Protocol-Version header is not that
+        # contradiction, but it is not spec-conformant client behavior either: the MCP spec's
+        # client-side rule says the client MUST include this header on every follow-up. What the
+        # spec ALSO says, separately, is a server-side backward-compatibility rule: if the server
+        # receives no such header and has no other way to identify the version, it SHOULD assume
+        # protocol version 2025-03-26 rather than reject (basic/transports#protocol-version-header)
+        # - tolerance for exactly this non-conformant-but-real traffic, not a license to omit the
+        # header. The pinned SDK already implements that server-side fallback
+        # (`DEFAULT_NEGOTIATED_VERSION`, `mcp.server.streamable_http`). Real-client finding (I3.4
+        # VS Code + GitHub Copilot Chat qualification, `mcp==2.2.0`-negotiated
+        # `protocolVersion: "2025-11-25"`): VS Code's own MCP client was directly observed sending
+        # `notifications/initialized` with no MCP-Protocol-Version header at all - rejecting that
+        # killed the connection outright before its queued `prompts/list`/`tools/list` could
+        # complete (their own headers were never observed as a result), regardless of whether VS
+        # Code's own omission was itself spec-conformant. The pinned SDK owns everything else
+        # from here: negotiation, session lifecycle, and dispatch, including its own graceful
+        # missing-header default and rejecting a version it does not recognize.
         if parsed.get("method") == "initialize":
             await self._app(scope, replay_receive, send)
             return
 
         version_header = headers.get(MCP_PROTOCOL_VERSION_HEADER)
-        if version_header is None:
-            await _send_json_error(
-                send,
-                _DEFAULT_HTTP_STATUS,
-                _error_body(
-                    request_id,
-                    INVALID_REQUEST,
-                    "A negotiated follow-up request requires an MCP-Protocol-Version header",
-                ),
-            )
-            return
-        if version_header in MODERN_PROTOCOL_VERSIONS:
+        if version_header is not None and version_header in MODERN_PROTOCOL_VERSIONS:
             await _send_json_error(
                 send,
                 _DEFAULT_HTTP_STATUS,
