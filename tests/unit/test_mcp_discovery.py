@@ -30,6 +30,8 @@ failure attribution in the traceback.
 
 from __future__ import annotations
 
+import asyncio
+
 import httpx
 import pytest
 from mcp.server import MCPServer
@@ -600,6 +602,117 @@ async def _check_negotiated_tools_call_shares_the_direct_tool_implementation(
     assert result["content"][0]["text"] == "Error executing tool get_architecture_drift"
 
 
+# --- Direct-marked but unimplemented methods (v0.4.2 I1, I3.3 actual-client finding) ---------------
+#
+# `mcp-method`/`mcp-name` are the pinned SDK's own header names (`mcp.shared.inbound`), not
+# AIP-proprietary - a real client can legitimately send them for its own SDK-native purposes.
+# Claude Code's actual MCP client sends `mcp-method: server/discover` and
+# `mcp-method: subscriptions/listen` as part of its ordinary capability-discovery/notification
+# handshake under protocol era `2026-07-28`. Before the fix, any direct-marked request whose method
+# was not `tools/call` fell through to a blind `await self._app(...)` forward - which is exactly how
+# `subscriptions/listen` reached an SDK code path that hangs indefinitely under AIP's stateless
+# single-worker deployment, pegging the process at ~100% CPU and making it unresponsive to every
+# other client, including its own health check. See `app/mcp/guard.py`'s `_DIRECT_MODE_METHODS`.
+#
+# The exact `subscriptions/listen` reproduction is deliberately NOT an in-process ASGI check here:
+# this module's own root-cause finding is that the offending SDK code never yields to the event
+# loop, so `asyncio.wait_for` cannot preempt it once it starts - confirmed by git-stash-verifying
+# that an in-process version of this exact check hangs the *entire* pytest process indefinitely
+# without the fix, not just this one test. `tests/integration/test_mcp_direct_marker_dos_regression.py`
+# covers that specific case instead, running the guard-wrapped app in a genuinely separate OS
+# process so a parent-side hard timeout can terminate the child and fail promptly if it regresses.
+
+
+async def _check_another_unimplemented_direct_marked_method_is_also_rejected(
+    client: httpx.AsyncClient,
+) -> None:
+    """Proves the fix is a general allowlist, not a `subscriptions/listen`-specific denylist entry:
+    `server/discover` (the other real Claude Code method observed) is rejected the same way, even
+    though it happened to return a plausible-looking response - not a hang - before this fix."""
+    body = {
+        "jsonrpc": "2.0",
+        "id": "discover:0",
+        "method": "server/discover",
+        "params": {"_meta": _meta()},
+    }
+    response = await asyncio.wait_for(
+        client.post("/mcp", headers=_headers(method="server/discover"), json=body),
+        timeout=5,
+    )
+    assert response.status_code == 404
+    error = response.json()["error"]
+    assert error["code"] == -32601
+    assert error["data"] == "server/discover"
+
+
+async def _check_header_body_mismatch_takes_priority_over_unimplemented_method(
+    client: httpx.AsyncClient,
+) -> None:
+    """A request that is simultaneously an Mcp-Method/body mismatch AND names an unimplemented
+    method must report the header mismatch, not the new allowlist check - matching this guard's
+    existing rung ordering (`classify_inbound_request` always runs first)."""
+    headers = dict(_headers(method="subscriptions/listen"), **{"mcp-method": "tools/list"})
+    body = {
+        "jsonrpc": "2.0",
+        "id": "x",
+        "method": "subscriptions/listen",
+        "params": {"_meta": _meta()},
+    }
+    response = await asyncio.wait_for(client.post("/mcp", headers=headers, json=body), timeout=5)
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == -32020
+
+
+async def _check_server_stays_responsive_after_rejecting_an_unimplemented_direct_method(
+    client: httpx.AsyncClient,
+) -> None:
+    """A rejected unimplemented-method request must leave no residual damage - an ordinary direct
+    `tools/list` immediately afterward must still succeed normally, and negotiated `initialize`
+    traffic must still route correctly too (direct/negotiated classification stays distinct)."""
+    body = {
+        "jsonrpc": "2.0",
+        "id": "listen:1",
+        "method": "subscriptions/listen",
+        "params": {"_meta": _meta()},
+    }
+    await asyncio.wait_for(
+        client.post("/mcp", headers=_headers(method="subscriptions/listen"), json=body),
+        timeout=5,
+    )
+
+    direct_response = await asyncio.wait_for(
+        client.post("/mcp", headers=_headers(method="tools/list"), json=_tools_list_body()),
+        timeout=5,
+    )
+    assert direct_response.status_code == 200
+    names = [t["name"] for t in direct_response.json()["result"]["tools"]]
+    assert len(names) == 3
+
+    negotiated_response = await asyncio.wait_for(
+        client.post(
+            "/mcp",
+            headers={
+                "content-type": "application/json",
+                "accept": "application/json, text/event-stream",
+                "origin": _ALLOWED_ORIGIN,
+            },
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-11-25",
+                    "capabilities": {},
+                    "clientInfo": {"name": "post-hang-check", "version": "0.0.0"},
+                },
+            },
+        ),
+        timeout=5,
+    )
+    assert negotiated_response.status_code == 200
+    assert negotiated_response.json()["result"]["protocolVersion"] == "2025-11-25"
+
+
 async def _check_get_is_rejected_with_405_before_sdk_invocation(
     client: httpx.AsyncClient,
 ) -> None:
@@ -683,6 +796,11 @@ async def test_mcp_protocol_and_discovery() -> None:
             await _check_malformed_json_without_direct_header_reaches_sdk_parse_handler(client)
             await _check_malformed_json_with_direct_header_is_owned_by_direct_path(client)
             await _check_negotiated_tools_call_shares_the_direct_tool_implementation(client)
+            await _check_another_unimplemented_direct_marked_method_is_also_rejected(client)
+            await _check_header_body_mismatch_takes_priority_over_unimplemented_method(client)
+            await _check_server_stays_responsive_after_rejecting_an_unimplemented_direct_method(
+                client
+            )
             await _check_get_is_rejected_with_405_before_sdk_invocation(client)
             await _check_delete_is_rejected_with_405_before_sdk_invocation(client)
             await _check_head_is_rejected_with_405_and_empty_body(client)
