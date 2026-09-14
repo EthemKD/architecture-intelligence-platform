@@ -876,8 +876,8 @@ making Promise Theory itself a required AIP implementation model.
 The key separation is:
 
 ```text
-EXPLICIT PROMISE
-what an autonomous component explicitly offers, accepts, requires, or commits to
+EXPLICIT INTENT ASSERTION
+an attributable requirement, capability offer, capability acceptance, constraint, or promise
 
         ≠
 
@@ -891,9 +891,14 @@ what that evidence supports about the relationship between promise and cooperati
 in a given locality and time
 ```
 
+A promise is a distinct Intent Assertion with an explicit promiser, promised behavior or capability,
+conditions, and an identified recipient or audience where applicable. A requirement expressed by a
+consumer does not establish a provider's promise to satisfy it. Offers, acceptances, and requirements
+retain their own assertion kinds and attributable actors; none is silently converted into another.
+
 AIP does not assign promises to autonomous components. It preserves explicit, attributable promise
-artifacts where available and assesses how the observed or declared cooperation relates to those
-promises.
+artifacts where available, applies the authority and lifecycle rules in §15.1, and assesses how the
+observed or declared cooperation relates to the applicable promises.
 
 AIP should therefore prefer statements of the form:
 
@@ -1019,6 +1024,7 @@ IntentAlignmentAssessment(
     current_state_ref,
     current_assessment_refs,
     intent_assertion_ref,
+    intent_projection_ref,  // identifies the versioned applicable Intent projection
     evaluation_context,
     evaluated_at,
 
@@ -1288,11 +1294,16 @@ Current-State Projection lineage:
   evidence-only; established independently
 
 Applicable Intent Projection lineage:
-  ├── Explicit Intent Assertion(s)
+  ├── Versioned Intent projection identity
+  ├── Explicit Intent Assertion(s) + source revisions
   ├── Intent source artifact(s)
   ├── Intent mapping rule + version
-  ├── Intent scope
+  ├── Intent scope + evaluation context
   ├── effective_from / effective_until
+  ├── Authority evidence + authority scope
+  ├── Lifecycle evidence (approval status, exceptions, revocation, supersession)
+  ├── Applicability / precedence rule identity + version
+  ├── Unresolved authority / applicability conflicts and limitations
   └── Intent provenance
 
 Qualified Current ↔ Intent Assessment
@@ -1306,6 +1317,19 @@ Qualified Current ↔ Intent Assessment
 ├── Provenance
 └── Limitations
 ```
+
+Each applicable Intent projection must have a versioned identity bound to the exact assertion
+revisions, authority and lifecycle evidence, evaluation context, and mapping/applicability rule
+versions used. These dependencies must be explicitly referenced in its lineage rather than left
+implicit in a generic provenance field. Missing or unresolved authority evidence remains a limitation,
+not an assumed approval.
+
+A Current↔Intent assessment must reference that exact projection identity. For example, revoking an
+exception must produce a distinguishable Intent projection even when the assertion text and Current
+State remain unchanged. Resolving an assessment's lineage must not silently substitute the latest
+authority or lifecycle status for the version used at evaluation. Historical retrieval and retention
+remain governed by the roadmap; where prior dependencies are unavailable, AIP must explicitly report
+that the earlier assessment cannot be reproduced rather than claim historical replay.
 
 The assessment DAG may reference both paths, but it must never create a back-edge from Intent into
 Current-State establishment.
