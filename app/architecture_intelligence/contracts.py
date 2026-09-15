@@ -109,10 +109,14 @@ _ALLOWED_DELIVERY_PAIRS = {
 }
 
 
+ProducerName = Literal["architecture-intelligence-platform"]
+PRODUCER_NAME: ProducerName = get_args(ProducerName)[0]
+
+
 class Producer(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    name: Literal["architecture-intelligence-platform"]
+    name: ProducerName
     version: str
     build_revision: str
 
