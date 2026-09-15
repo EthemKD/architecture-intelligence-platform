@@ -271,6 +271,15 @@ create a new semantic graph revision when normalized input is unchanged.
 
 Changing normalization is a mapping-rule version change and requires golden tests.
 
+I1 Draft 0.2 amends this replay contract: its `semantic_input_digest` binds the normalized
+document/reference projection and a common `mapping_context_digest` as specified in I1 §5.3.
+The context includes the complete configured/manifest identity and migration mappings and active
+adapter, normalization, and mapping-rule identities/versions. Changes or valid removals trigger
+reevaluation even with unchanged documents; missing required artifacts remain errors. A changed
+fingerprint alone does not mandate a graph-revision increment: identical canonical claims,
+ownership, and answer-visible evidence after reevaluation remain a semantic no-op. Inventory,
+scope, and removal checks cannot be skipped by a mapping replay no-op.
+
 ### 7.4 Replay behavior
 
 ```text
@@ -503,7 +512,11 @@ I1 requires deterministic proof that:
 - content-equivalent inline/reference schemas preserve normalized hashes and operation-contract
   roles while retaining distinct owner-scoped IDs unless explicitly mapped to a shared identity;
 - cycles, duplicates, and conflicts fail deterministically without partial writes;
-- reimport is idempotent and semantic no-op does not advance graph revision;
+- reimport with unchanged mapping context is idempotent and semantic no-op does not advance graph revision;
+- changed/removed mappings and active rule versions force reevaluation; unresolved identity rejects
+  the run without expiration;
+- AsyncAPI with channels but zero supported Queue relations is rejected; partial support yields
+  limitations, and empty channel sets may be accepted as Service-only under I1 §9.1;
 - checkout paths do not affect source identity;
 - generic source identity, replay, and inventory rules pass I1 fixtures; Kubernetes mapping and
   any frozen/live replay qualification belong to I2;
@@ -511,7 +524,10 @@ I1 requires deterministic proof that:
 - missing sources, incomplete checkouts, failed/partial discovery preserve committed state;
 - changed filters/scopes cannot expire prior ownership without explicit transition;
 - shared claims survive removal of one source;
-- two clean runs produce byte-identical semantic reports.
+- two clean runs with identical mapping contexts/rules and the same initial graph, ownership,
+  evidence, and inventory state produce byte-identical semantic reports;
+- sequential replay preserves canonical results with zero mutations and unchanged graph revision;
+  first-import and replay effect reports need not be identical.
 
 ---
 
