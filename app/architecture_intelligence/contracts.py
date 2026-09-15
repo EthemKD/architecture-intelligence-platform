@@ -315,9 +315,6 @@ class DependencyClaim(BaseModel):
         elif self.coverage is not None:
             raise ValueError("coverage is only meaningful for NOT_OBSERVED_IN_WINDOW claims")
 
-        if not self.evidence_refs:
-            raise ValueError("evidence_refs must not be empty")
-
         if self.destination_resolution == DestinationResolution.RESOLVED_SERVICE:
             if not self.resolution_evidence_refs:
                 raise ValueError(
